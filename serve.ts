@@ -1,43 +1,63 @@
-// Tiny static server for trying the guide locally: serves app/ at http://localhost:8080.
-// Node 22, standard library only. Usage: node serve.ts
+// A tiny static server for app/ (Node 22, standard library only), so the guide
+// can be tried locally without a build step: `node serve.ts` serves app/ on
+// http://localhost:8080 (`--port <n>` for another port). It sends the MIME types
+// a browser needs, refuses any path outside app/, and does nothing else: this is
+// a development convenience, not a web server for the internet.
+import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { join, extname, normalize } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const appRoot = join(fileURLToPath(new URL('.', import.meta.url)), 'app');
-const mimeByExtension = {
+const appRoot = resolve(fileURLToPath(new URL('./app', import.meta.url)));
+const args = process.argv.slice(2);
+const portFlag = args.indexOf('--port');
+const wanted = portFlag === -1 ? 8080 : Number(args[portFlag + 1]);
+const port = Number.isInteger(wanted) && wanted > 0 && wanted < 65536 ? wanted : 8080;
+
+const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.txt': 'text/plain; charset=utf-8',
+  '.ico': 'image/x-icon',
 };
 
-const server = createServer(async (request, response) => {
-  const path = normalize(decodeURIComponent(new URL(request.url, 'http://localhost').pathname));
-  const file = join(appRoot, path === '/' ? 'index.html' : path);
-  if (!file.startsWith(appRoot)) {
-    response.writeHead(403);
-    response.end('Forbidden');
+createServer((request, response) => {
+  const url = new URL(request.url ?? '/', 'http://localhost');
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    response.writeHead(400).end('bad request');
     return;
   }
+  if (pathname.endsWith('/')) pathname += 'index.html';
+  const file = resolve(join(appRoot, normalize(pathname)));
+  if (file !== appRoot && !file.startsWith(appRoot + sep)) {
+    response.writeHead(403).end('forbidden');
+    return;
+  }
+  let size;
   try {
-    const body = await readFile(file);
-    response.writeHead(200, { 'content-type': mimeByExtension[extname(file)] ?? 'application/octet-stream' });
-    response.end(body);
+    const stats = statSync(file);
+    if (!stats.isFile()) throw new Error('not a file');
+    size = stats.size;
   } catch {
-    response.writeHead(404);
-    response.end('Not found');
+    response.writeHead(404).end('not found');
+    return;
   }
-});
-
-server.listen(8080, '127.0.0.1', () => console.log('Leonida Platinum at http://localhost:8080'));
-server.on('error', (error) => {
-  if (error.code === 'EADDRINUSE') {
-    console.error('Port 8080 is already in use — stop the other server first, then run node serve.ts again.');
-    process.exit(1);
-  }
-  throw error;
+  response.writeHead(200, {
+    'content-type': MIME_TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'content-length': size,
+    'cache-control': 'no-store',
+  });
+  createReadStream(file).pipe(response);
+}).listen(port, '127.0.0.1', () => {
+  console.log(`app/ is on http://localhost:${port}`);
 });
